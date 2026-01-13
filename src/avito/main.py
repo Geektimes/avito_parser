@@ -10,7 +10,7 @@ from playwright_stealth import Stealth
 
 # --- ORM IMPORTS ---
 from tortoise import Tortoise, run_async
-from models import Advertisement  # Импортируем нашу модель
+from models import Advertisement
 
 load_dotenv()
 
@@ -26,28 +26,61 @@ LOCATION_PARAMS = {
     "geolocation": {"latitude": 52.370216, "longitude": 4.895168}
 }
 
-# Путь к базе данных
 DB_DIR = "/home/debian/projects/avito/src/avito/DB"
 DB_PATH = os.path.join(DB_DIR, "db.sqlite3")
 
 ua = UserAgent(browsers=['chrome', 'edge'])
 USER_DATA_DIR = os.path.join(os.getcwd(), "playwright_profile")
 
-
 # --- ИНИЦИАЛИЗАЦИЯ БД ---
 async def init_db():
-    # Создаем директорию, если её нет
     if not os.path.exists(DB_DIR):
         os.makedirs(DB_DIR)
         print(f"📁 Создана директория для БД: {DB_DIR}")
-
     await Tortoise.init(
         db_url=f'sqlite://{DB_PATH}',
         modules={'models': ['models']}
     )
-    # Создает таблицы, если их нет
     await Tortoise.generate_schemas()
-    print("🗄️ База данных подключена и проверена.")
+    print("🗄️ База данных подключена.")
+
+# --- ФУНКЦИЯ ЧЕЛОВЕЧЕСКОГО СКРОЛЛА ---
+async def human_scroll(page):
+    """
+    Эмулирует чтение страницы пользователем:
+    - Скроллит вниз с переменной скоростью.
+    - Иногда делает небольшие паузы.
+    - Не обязательно скроллит до самого пикселя низа, но проходит основной контент.
+    """
+    print("   👀 Эмуляция просмотра страницы (скроллинг)...")
+    
+    # Получаем высоту страницы
+    total_height = await page.evaluate("document.body.scrollHeight")
+    viewport_height = await page.evaluate("window.innerHeight")
+    current_scroll = 0
+    
+    while current_scroll < total_height:
+        # Случайный шаг скролла (от 300 до 800 пикселей)
+        scroll_step = random.randint(300, 800)
+        current_scroll += scroll_step
+        
+        # Выполняем скролл
+        await page.mouse.wheel(0, scroll_step)
+        
+        # Если "улетели" ниже конца страницы, корректируем
+        if current_scroll > total_height:
+            current_scroll = total_height
+            
+        # Случайная задержка между рывками (как будто человек читает заголовки)
+        # От 0.1 до 0.8 секунды
+        await asyncio.sleep(random.uniform(0.1, 0.8))
+        
+        # Иногда делаем паузу побольше, будто заинтересовало объявление
+        if random.random() < 0.1: # 10% шанс
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+            
+    # Небольшая пауза в конце перед действием
+    await asyncio.sleep(1)
 
 
 # --- ФУНКЦИЯ ПЕРЕХОДА НА СЛЕДУЮЩУЮ СТРАНИЦУ ---
@@ -56,9 +89,11 @@ async def go_to_next_page(page):
     try:
         next_button = page.locator(next_button_selector).last
         if await next_button.is_visible():
-            print("   -> ➡️ Переход на следующую страницу...")
+            print("   -> ➡️ Клик по кнопке 'Далее'...")
+            # Скролл к кнопке уже не обязателен, если мы проскроллили всю страницу human_scroll,
+            # но для надежности оставим нативный метод
             await next_button.scroll_into_view_if_needed()
-            await asyncio.sleep(random.uniform(1.5, 3.5))
+            await asyncio.sleep(random.uniform(1.0, 2.5))
             await next_button.click()
             
             try:
@@ -67,30 +102,24 @@ async def go_to_next_page(page):
                 await page.wait_for_load_state("domcontentloaded")
             return True
         else:
-            print("   -> 🛑 Кнопка 'Следующая страница' не найдена (конец списка).")
+            print("   -> 🛑 Кнопка 'Следующая страница' не найдена.")
             return False
     except Exception as e:
         print(f"   -> ⚠️ Ошибка навигации: {e}")
         return False
 
-
+# --- ПАРСИНГ И СОХРАНЕНИЕ ---
 # --- ПАРСИНГ И СОХРАНЕНИЕ В БД ---
 async def process_page_data(page):
-    """
-    Парсит элементы на странице, проверяет их наличие в БД 
-    и сохраняет новые. Возвращает список обработанных ID.
-    """
     processed_ids = []
     new_items_count = 0
     
     try:
-        # Ждем загрузки списка
         await page.wait_for_selector('div[data-marker="item"]', state='attached', timeout=10000)
     except:
         print("⚠️ Объявления не прогрузились.")
         return []
 
-    # Получаем все блоки объявлений
     items = await page.query_selector_all('div[data-marker="item"]')
     
     for item in items:
@@ -103,13 +132,12 @@ async def process_page_data(page):
             avito_id = int(avito_id)
             processed_ids.append(str(avito_id))
 
-            # 2. ПРОВЕРКА В БАЗЕ (Если есть - пропускаем парсинг полей для экономии времени)
+            # 2. ПРОВЕРКА В БАЗЕ
             exists = await Advertisement.exists(id=avito_id)
             if exists:
-                # print(f"   Skip: {avito_id} (уже в базе)")
                 continue
 
-            # 3. ПАРСИНГ ПОЛЕЙ (только для новых)
+            # 3. ПАРСИНГ ПОЛЕЙ
             
             # Название
             title_el = await item.query_selector('[itemprop="name"]')
@@ -122,58 +150,45 @@ async def process_page_data(page):
                 p_val = await price_meta.get_attribute('content')
                 price = int(p_val) if p_val and p_val.isdigit() else 0
 
-            # Описание (legend)
+            # Описание
             desc_meta = await item.query_selector('meta[itemprop="description"]')
             legend = await desc_meta.get_attribute('content') if desc_meta else None
 
-            # --- БЛОК ПОЛУЧЕНИЯ ФОТО (v3.0 - Самый надежный) ---
+            # Фото (первое)
             photo = None
+            img_el = await item.query_selector('img')
+            if img_el:
+                photo = await img_el.get_attribute('src')
             
-            # СПОСОБ 1: Извлекаем из атрибута data-marker элемента списка (там ссылка есть всегда)
-            # Пример: data-marker="slider-image/image-https://..."
-            slider_item = await item.query_selector('li[data-marker*="slider-image"]')
             
-            if slider_item:
-                marker_attr = await slider_item.get_attribute('data-marker')
-                if marker_attr and "image-" in marker_attr:
-                    # Разделяем строку по "image-" и берем вторую часть (саму ссылку)
-                    photo = marker_attr.split("image-")[-1]
+            # --- ИЗМЕНЕННЫЙ БЛОК SELLER ID ---
+            seller_id = None
             
-            # СПОСОБ 2 (Резервный): Если слайдера нет, ищем тег img с itemprop="image"
-            if not photo:
-                print("СПОСОБ 2 (Резервный): Если слайдера нет, ищем тег img")
-                img_el = await item.query_selector('img[itemprop="image"]')
-                if img_el:
-                    # Сначала пробуем src
-                    photo = await img_el.get_attribute('src')
-                    
-                    # Если src пуст (ленивая загрузка), пробуем srcset
-                    if not photo:
-                        srcset = await img_el.get_attribute('srcset')
-                        if srcset:
-                            # srcset выглядит как "url 1x, url 2x", берем первый url
-                            photo = srcset.split(" ")[0]
-            # ---------------------------------------------------
+            # 1. Ищем любую ссылку в карточке, содержащую /user/ или /brands/
+            # Мы убрали поиск по div[class*="sellerInfo"], так как он пропускал часть объявлений
+            seller_link_el = await item.query_selector('a[href*="/user/"], a[href*="/brands/"]')
+            print(f"seller_link_el = {seller_link_el}")
+            
+            if seller_link_el:
+                href = await seller_link_el.get_attribute('href')
+                if href:
+                    # 2. Улучшенная регулярка: ищет после user/ или brands/
+                    # [^/?]+ означает: "брать всё до первого знака '?' или '/'"
+                    match = re.search(r'/(user|brands)/([^/?]+)', href)
+                    if match:
+                        # group(2) берет именно хэш (то, что во второй скобке)
+                        seller_id = match.group(2) 
+            # ---------------------------------
+
+
 
             # Дата
             date_el = await item.query_selector('[data-marker="item-date"]')
             date_text = await date_el.inner_text() if date_el else None
 
-            # Город (ищем в блоке geo)
-            # Селекторы города часто меняются, ищем по классу или маркеру
+            # Город
             city_el = await item.query_selector('[class*="geo-root"]') 
             city = await city_el.inner_text() if city_el else None
-
-            # Seller ID (из ссылки)
-            # Ссылка обычно внутри блока title или user info
-            seller_id = None
-            link_el = await item.query_selector('a[href*="/user/"]')
-            if link_el:
-                href = await link_el.get_attribute('href')
-                # Пытаемся вытащить хэш юзера из ссылки вида /user/HASH/profile...
-                match = re.search(r'/user/([^/]+)/', href)
-                if match:
-                    seller_id = match.group(1)
 
             # 4. ЗАПИСЬ В БД
             await Advertisement.create(
@@ -183,36 +198,33 @@ async def process_page_data(page):
                 seller_id=seller_id,
                 date=date_text,
                 legend=legend,
-                is_favorite=False, # По умолчанию
+                is_favorite=False,
                 city=city,
                 photo=photo
             )
             new_items_count += 1
-            # print(f"   New: {avito_id} saved.")
 
         except Exception as e:
-            print(f"Ошибка при обработке элемента: {e}")
+            # print(f"Ошибка при обработке элемента: {e}")
             continue
             
     print(f"   💾 Сохранено новых объявлений: {new_items_count}")
     return processed_ids
 
 
-# --- ОСНОВНОЙ ПАРСЕР ---
+# --- ЗАПУСК ---
 async def run_parser(url):
-    # Очистка профиля браузера (опционально)
     if os.path.exists(USER_DATA_DIR):
         try:
             shutil.rmtree(USER_DATA_DIR)
         except:
             pass
 
-    # Инициализация БД
     await init_db()
 
     async with Stealth().use_async(async_playwright()) as p:
         ua_string = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
+        
         launch_options = {
             "headless": False,
             "args": ['--disable-webrtc', '--disable-blink-features=AutomationControlled'],
@@ -222,60 +234,56 @@ async def run_parser(url):
         }
         
         context = await p.chromium.launch_persistent_context(USER_DATA_DIR, **launch_options)
-        
-        # Скрываем webdriver
         await context.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
         
         page = context.pages[0] if context.pages else await context.new_page()
-        print(f"User-Agent: {await page.evaluate('navigator.userAgent')}")
         
-        max_pages = 3
+        max_pages = 1
         current_page = 1
         total_processed = 0
         
         try:
             print(f"🌍 Переход на: {url}")
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
             
-            # while current_page <= max_pages:
-            while current_page <= 1:
-                print(f"\n--- 📄 Обработка страницы {current_page} из {max_pages} ---")
+            while current_page <= max_pages:
+                print(f"\n--- 📄 Страница {current_page} из {max_pages} ---")
                 
-                # Запускаем парсинг и сохранение в БД
+                # 1. Сначала скроллим как человек (для защиты от бана)
+                await human_scroll(page)
+                
+                # 2. Собираем данные (они уже все в DOM после загрузки, скролл не влияет на наличие атрибутов data-marker)
                 page_ids = await process_page_data(page)
                 
                 if page_ids:
-                    print(f"🔎 Найдено на странице: {len(page_ids)} объявлений")
+                    print(f"🔎 Обработано объявлений: {len(page_ids)}")
                     total_processed += len(page_ids)
                 else:
-                    print("⚠️ Объявления не найдены. Возможно, бан или капча.")
+                    print("⚠️ Пустая страница.")
                     if current_page == 1: break
 
-                # Пагинация
                 if current_page < max_pages:
                     success = await go_to_next_page(page)
                     if success:
                         current_page += 1
-                        await asyncio.sleep(random.uniform(3, 6)) # Пауза между страницами
+                        # Пауза после перехода на новую страницу, перед началом скролла
+                        await asyncio.sleep(random.uniform(2, 4))
                     else:
                         break
                 else:
-                    print("✅ Достигнут лимит страниц.")
+                    print("✅ Лимит страниц исчерпан.")
                     break
             
             print("=" * 40)
-            print(f"🏁 Работа завершена. Обработано ID всего: {total_processed}")
-            
-            # Подсчет статистики из БД
+            print(f"🏁 Сессия завершена. Обработано ID: {total_processed}")
             count = await Advertisement.all().count()
-            print(f"📊 Всего записей в базе данных: {count}")
+            print(f"📊 Всего в базе: {count}")
             print("=" * 40)
-
             await asyncio.sleep(2)
 
         except Exception as e:
-            print(f"\n🔥 КРИТИЧЕСКАЯ ОШИБКА: {e}")
+            print(f"\n🔥 Ошибка: {e}")
         
         finally:
             await Tortoise.close_connections()
@@ -283,8 +291,7 @@ async def run_parser(url):
 
 if __name__ == "__main__":
     try:
-        # Ссылка с фильтрами из вашего примера
         target_url = "https://www.avito.ru/volgogradskaya_oblast/noutbuki?f=ASgCAQECAkCo5A30D969xBHe2WaA2mbQ2WbE2WaS2maC2mbG2WbU2WbA2Wa02WbC2Wbm2Wa22Wb02WaGoRQk0uSOA87kjgMCRcaaDBp7ImZyb20iOjE4MDAwLCJ0byI6MTI5MDAwfZyhFBV7ImZyb20iOjE2LCJ0byI6bnVsbH0&localPriority=1&s=104"
         asyncio.run(run_parser(target_url))
     except KeyboardInterrupt:
-        print("\n⛔ Программа остановлена.")
+        print("\n⛔ Стоп.")
