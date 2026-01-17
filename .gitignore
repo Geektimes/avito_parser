@@ -1,4 +1,9 @@
-avito-1.html
+src/avito/playwright_profile/
+src/avito/debug_items/
+index.html
+temp.py
+playwright_parse_local.py
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

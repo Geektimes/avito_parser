@@ -108,28 +108,42 @@ async def go_to_next_page(page):
         print(f"   -> ⚠️ Ошибка навигации: {e}")
         return False
 
-# --- ПАРСИНГ И СОХРАНЕНИЕ ---
-# --- ПАРСИНГ И СОХРАНЕНИЕ В БД ---
+
+
+
+# --- В начале файла, где конфигурация ---
+DEBUG_HTML_DIR = "/home/debian/projects/avito/src/avito/debug_items"
+error_counter = 1 # Начальное значение счетчика
+
+if not os.path.exists(DEBUG_HTML_DIR):
+    os.makedirs(DEBUG_HTML_DIR)
+    print(f"📁 Создана папка для отладки HTML: {DEBUG_HTML_DIR}")
+
+
+# --- ОБНОВЛЕННАЯ ФУНКЦИЯ ---
 async def process_page_data(page):
+    global error_counter # Используем глобальный счетчик
     processed_ids = []
     new_items_count = 0
     
+    items_locator = page.locator('div[data-marker="item"]')
+    
     try:
-        await page.wait_for_selector('div[data-marker="item"]', state='attached', timeout=10000)
+        await items_locator.first.wait_for(state='attached', timeout=10000)
     except:
         print("⚠️ Объявления не прогрузились.")
         return []
 
-    items = await page.query_selector_all('div[data-marker="item"]')
+    items = await items_locator.all()
     
     for item in items:
         try:
             # 1. ID Объявления
-            avito_id = await item.get_attribute('data-item-id')
-            if not avito_id:
+            avito_id_str = await item.get_attribute('data-item-id')
+            if not avito_id_str:
                 continue
             
-            avito_id = int(avito_id)
+            avito_id = int(avito_id_str)
             processed_ids.append(str(avito_id))
 
             # 2. ПРОВЕРКА В БАЗЕ
@@ -138,57 +152,52 @@ async def process_page_data(page):
                 continue
 
             # 3. ПАРСИНГ ПОЛЕЙ
-            
-            # Название
-            title_el = await item.query_selector('[itemprop="name"]')
-            title = await title_el.inner_text() if title_el else "Без названия"
+            title_loc = item.locator('[itemprop="name"]')
+            title = await title_loc.inner_text() if await title_loc.count() > 0 else "Без названия"
 
-            # Цена
-            price_meta = await item.query_selector('meta[itemprop="price"]')
+            price_loc = item.locator('meta[itemprop="price"]')
             price = 0
-            if price_meta:
-                p_val = await price_meta.get_attribute('content')
+            if await price_loc.count() > 0:
+                p_val = await price_loc.get_attribute('content')
                 price = int(p_val) if p_val and p_val.isdigit() else 0
 
-            # Описание
-            desc_meta = await item.query_selector('meta[itemprop="description"]')
-            legend = await desc_meta.get_attribute('content') if desc_meta else None
+            desc_loc = item.locator('meta[itemprop="description"]')
+            legend = await desc_loc.get_attribute('content') if await desc_loc.count() > 0 else None
 
-            # Фото (первое)
-            photo = None
-            img_el = await item.query_selector('img')
-            if img_el:
-                photo = await img_el.get_attribute('src')
-            
-            
-            # --- ИЗМЕНЕННЫЙ БЛОК SELLER ID ---
+            img_loc = item.locator('img').first
+            photo = await img_loc.get_attribute('src') if await img_loc.count() > 0 else None
+
+            date_loc = item.locator('[data-marker="item-date"]')
+            date_text = await date_loc.inner_text() if await date_loc.count() > 0 else None
+
+            city_loc = item.locator('[class*="geo-root"]')
+            city = await city_loc.inner_text() if await city_loc.count() > 0 else None
+
+            # --- ПАРСИНГ SELLER_ID ---
             seller_id = None
+            item_links = item.locator('a')
+            all_hrefs = await item_links.evaluate_all("elements => elements.map(e => e.href)")
             
-            # 1. Ищем любую ссылку в карточке, содержащую /user/ или /brands/
-            # Мы убрали поиск по div[class*="sellerInfo"], так как он пропускал часть объявлений
-            seller_link_el = await item.query_selector('a[href*="/user/"], a[href*="/brands/"]')
-            print(f"seller_link_el = {seller_link_el}")
+            for href in all_hrefs:
+                match = re.search(r'/(user|brands)/([^/?]+)', href)
+                if match:
+                    seller_id = match.group(2)
+                    break
             
-            if seller_link_el:
-                href = await seller_link_el.get_attribute('href')
-                if href:
-                    # 2. Улучшенная регулярка: ищет после user/ или brands/
-                    # [^/?]+ означает: "брать всё до первого знака '?' или '/'"
-                    match = re.search(r'/(user|brands)/([^/?]+)', href)
-                    if match:
-                        # group(2) берет именно хэш (то, что во второй скобке)
-                        seller_id = match.group(2) 
-            # ---------------------------------
-
-
-
-            # Дата
-            date_el = await item.query_selector('[data-marker="item-date"]')
-            date_text = await date_el.inner_text() if date_el else None
-
-            # Город
-            city_el = await item.query_selector('[class*="geo-root"]') 
-            city = await city_el.inner_text() if city_el else None
+            # --- ЛОГИКА СОХРАНЕНИЯ ОШИБОК ---
+            if seller_id is None:
+                file_name = f"{error_counter}.html"
+                file_path = os.path.join(DEBUG_HTML_DIR, file_name)
+                
+                # Получаем весь HTML код текущего айтема
+                item_html = await item.evaluate("el => el.outerHTML")
+                
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(item_html)
+                
+                print(f"⚠️ Seller_id не найден. HTML сохранен в: {file_name}")
+                error_counter += 1
+            # -------------------------------
 
             # 4. ЗАПИСЬ В БД
             await Advertisement.create(
@@ -203,7 +212,7 @@ async def process_page_data(page):
                 photo=photo
             )
             new_items_count += 1
-
+            
         except Exception as e:
             # print(f"Ошибка при обработке элемента: {e}")
             continue
@@ -212,13 +221,16 @@ async def process_page_data(page):
     return processed_ids
 
 
+
 # --- ЗАПУСК ---
 async def run_parser(url):
-    if os.path.exists(USER_DATA_DIR):
-        try:
-            shutil.rmtree(USER_DATA_DIR)
-        except:
-            pass
+    # ВАЖНО: Мы НЕ удаляем USER_DATA_DIR, если хотим сохранить сессию (логин)
+    # Если нужно сбросить профиль, раскомментируй строки ниже:
+    # if os.path.exists(USER_DATA_DIR):
+    #     try:
+    #         shutil.rmtree(USER_DATA_DIR)
+    #     except:
+    #         pass
 
     await init_db()
 
@@ -227,16 +239,29 @@ async def run_parser(url):
         
         launch_options = {
             "headless": False,
-            "args": ['--disable-webrtc', '--disable-blink-features=AutomationControlled'],
+            "args": [
+                '--disable-webrtc', 
+                '--disable-blink-features=AutomationControlled'
+            ],
             "user_agent": ua_string,
             "viewport": {'width': 1920, 'height': 940},        
             **LOCATION_PARAMS
         }
         
-        context = await p.chromium.launch_persistent_context(USER_DATA_DIR, **launch_options)
-        await context.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
-        
+        # ЗАПУСК PERSISTENT CONTEXT
+        # Браузер откроется и будет использовать папку USER_DATA_DIR для хранения кук
+        context = await p.chromium.launch_persistent_context(
+            USER_DATA_DIR, 
+            **launch_options
+        )
+
+        # Получаем первую страницу или создаем новую
         page = context.pages[0] if context.pages else await context.new_page()
+
+        # Доп. скрипт для маскировки
+        await context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+        )
         
         max_pages = 1
         current_page = 1
@@ -246,12 +271,27 @@ async def run_parser(url):
             print(f"🌍 Переход на: {url}")
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             await asyncio.sleep(3)
+
+            # ВАЖНО: Если ты еще не вошел в аккаунт, скрипт даст тебе время
+            # Раскомментируй строку ниже для первого запуска, чтобы успеть залогиниться
+            # --- ВСТАВИТЬ СЮДА ---
+            print("\n" + "="*50)
+            print("🛑 СКРИПТ НА ПАУЗЕ ДЛЯ ЛОГИНА")
+            print("👉 Пожалуйста, войдите в аккаунт Авито в открывшемся браузере.")
+            print("⌨️  Когда закончите, НАЖМИТЕ ENTER в этой консоли, чтобы продолжить...")
+            print("="*50 + "\n")
+            
+            # Асинхронное ожидание ввода (чтобы не разорвать связь с браузером)
+            await asyncio.get_event_loop().run_in_executor(None, input)
+            
+            print("✅ Логин подтвержден, сохраняю куки и продолжаю работу...")
+            # ---------------------
             
             while current_page <= max_pages:
                 print(f"\n--- 📄 Страница {current_page} из {max_pages} ---")
                 
                 # 1. Сначала скроллим как человек (для защиты от бана)
-                await human_scroll(page)
+                # await human_scroll(page)
                 
                 # 2. Собираем данные (они уже все в DOM после загрузки, скролл не влияет на наличие атрибутов data-marker)
                 page_ids = await process_page_data(page)
