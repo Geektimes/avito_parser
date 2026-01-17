@@ -112,12 +112,12 @@ async def go_to_next_page(page):
 
 
 # --- В начале файла, где конфигурация ---
-DEBUG_HTML_DIR = "/home/debian/projects/avito/src/avito/debug_items"
-error_counter = 1 # Начальное значение счетчика
+# DEBUG_HTML_DIR = "/home/debian/projects/avito/src/avito/debug_items"
+# error_counter = 1 # Начальное значение счетчика
 
-if not os.path.exists(DEBUG_HTML_DIR):
-    os.makedirs(DEBUG_HTML_DIR)
-    print(f"📁 Создана папка для отладки HTML: {DEBUG_HTML_DIR}")
+# if not os.path.exists(DEBUG_HTML_DIR):
+#     os.makedirs(DEBUG_HTML_DIR)
+#     print(f"📁 Создана папка для отладки HTML: {DEBUG_HTML_DIR}")
 
 
 # --- ОБНОВЛЕННАЯ ФУНКЦИЯ ---
@@ -274,18 +274,18 @@ async def run_parser(url):
 
             # ВАЖНО: Если ты еще не вошел в аккаунт, скрипт даст тебе время
             # Раскомментируй строку ниже для первого запуска, чтобы успеть залогиниться
-            # --- ВСТАВИТЬ СЮДА ---
-            print("\n" + "="*50)
-            print("🛑 СКРИПТ НА ПАУЗЕ ДЛЯ ЛОГИНА")
-            print("👉 Пожалуйста, войдите в аккаунт Авито в открывшемся браузере.")
-            print("⌨️  Когда закончите, НАЖМИТЕ ENTER в этой консоли, чтобы продолжить...")
-            print("="*50 + "\n")
             
-            # Асинхронное ожидание ввода (чтобы не разорвать связь с браузером)
-            await asyncio.get_event_loop().run_in_executor(None, input)
+            # print("\n" + "="*50)
+            # print("🛑 СКРИПТ НА ПАУЗЕ ДЛЯ ЛОГИНА")
+            # print("👉 Пожалуйста, войдите в аккаунт Авито в открывшемся браузере.")
+            # print("⌨️  Когда закончите, НАЖМИТЕ ENTER в этой консоли, чтобы продолжить...")
+            # print("="*50 + "\n")
             
-            print("✅ Логин подтвержден, сохраняю куки и продолжаю работу...")
-            # ---------------------
+            # # Асинхронное ожидание ввода (чтобы не разорвать связь с браузером)
+            # await asyncio.get_event_loop().run_in_executor(None, input)
+            
+            # print("✅ Логин подтвержден, сохраняю куки и продолжаю работу...")
+            # # ---------------------
             
             while current_page <= max_pages:
                 print(f"\n--- 📄 Страница {current_page} из {max_pages} ---")

@@ -3,7 +3,7 @@ src/avito/debug_items/
 index.html
 temp.py
 playwright_parse_local.py
-
+test.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
