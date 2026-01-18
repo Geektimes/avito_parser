@@ -1,5 +1,5 @@
-playwright_profile/
-src/avito/playwright_profile/
+profile/
+src/avito/profile/
 src/avito/debug_items/
 index.html
 temp.py
