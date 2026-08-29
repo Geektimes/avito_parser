@@ -1,0 +1,50 @@
+services:
+  avito-bot:
+    build: ./bot
+    image: avito-bot:latest
+    container_name: avito-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data:ro
+    networks:
+      - avito_net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  avito-parser:
+    build: .
+    image: avito-parser:latest
+    container_name: avito-parser
+    restart: unless-stopped
+    depends_on:
+      - avito-bot
+    networks:
+      - avito_net
+    volumes:
+      - ./output:/data/output
+      - ./data:/app/data
+      - ./proxies.txt:/app/proxies.txt:ro
+      - ./cookies.txt:/app/cookies.txt:ro
+      - ./monitor.ini:/app/monitor.ini:ro
+    command:
+      - "--watch"
+      - "--interval"
+      - "3600"
+      - "--jitter"
+      - "300"
+      - "--url"
+      - "https://www.avito.ru/volgogradskaya_oblast/noutbuki/noutbuki/diagonal_15inch_or_more-ASgBAgICAUSGoRTO5I4D?context=H4sIAAAAAAAA_wFAAL__YToyOntzOjExOiJ0b3RhbF9mb3VuZCI7aTozMTE2O3M6MToieSI7czoxNjoiZkZDdFB5RndOVU5yS09aMiI7fd6AGgJAAAAA&f=ASgBAgECAUSGoRTO5I4DAUWcoRQVeyJmcm9tIjoxNiwidG8iOm51bGx9&localPriority=1&s=104"
+      - "--pages"
+      - "3"
+      - "--cookies-file"
+      - "/app/cookies.txt"
+      - "--monitor-config"
+      - "/app/monitor.ini"
+
+networks:
+  avito_net:

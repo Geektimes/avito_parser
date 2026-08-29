@@ -1,0 +1,7 @@
+﻿cookies.txt
+output/
+.venv/
+__pycache__/
+logs/
+monitor.ini
+.env
